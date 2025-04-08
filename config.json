@@ -1,0 +1,25 @@
+{
+  "environment": "production",
+  "test": {
+    "apiKey": "cdb31f9c78b165c1884fc135c72b0b6772934beb0150404f094738b5b71e706f",
+    "secretKey": "cee5ba5a3cc735dcb9315c82b09c8eb22fe3ea5f9823450fadd3ce83f373332d",
+    "baseUrl": "https://testnet.binancefuture.com",
+    "wsUrl": "wss://fstream.binancefuture.com"
+  },
+  "production": {
+    "apiKey": "veqcGe3zOk7VtAT5O4tTOO7L7YLMyhn2Ivt5Uzecac9BbZQWbKKwnOdheeo9jhUp",
+    "secretKey": "GP4ThoM4BLDXWhcwOoRp454EN1z4Ux7iZKB6DabyKiY8iFbHDBAG8ZoiUo6DZU6G",
+    "baseUrl": "https://fapi.binance.com",
+    "wsUrl": "wss://fstream.binance.com"
+  },
+  "symbols": ["BTCUSDT"],
+  "leverage": 20,
+  "rsiPeriod": 14,
+  "riskPerTrade": 0.01,
+  "maxLeverage": 20,
+  "minLeverage": 10,
+  "retryAttempts": 3,
+  "polygonApiKey": "nPDsex0Fu8p0gXgqq1k6vGJQ8j1SW6gE",
+  "fredApiKey": "d6a7152d17cff3b244f586cd5970a125",
+  "alphaVantageApiKey": "RQ9ZLC2ZUFC4WUXO"
+}

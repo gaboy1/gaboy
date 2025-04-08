@@ -1,0 +1,8 @@
+# 忽略 node_modules 依赖文件夹
+node_modules/
+
+# 忽略 config.js 文件
+config.js
+
+# 忽略环境变量文件（如果你以后用到）
+.env
