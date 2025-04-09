@@ -29,9 +29,11 @@ class RestAPI {
       });
       this.timeOffset = 0;
       this.syncTime();
-      setInterval(() => this.syncTime(), 60 * 60 * 1000);
+      setInterval(() => {
+        this.syncTime().catch(err => console.error('定时同步时间失败：', err.message));
+      }, 60 * 60 * 1000);
     } catch (error) {
-      console.error('错误: 初始化RestAPI失败:', error.message);
+      console.error('初始化RestAPI时出错：', error.message);
     }
   }
 
@@ -39,9 +41,9 @@ class RestAPI {
     try {
       const serverTime = await this.binance.futuresTime();
       this.timeOffset = serverTime - Date.now();
-      console.log('时间同步成功，偏移量:', this.timeOffset);
+      console.log('时间已同步，偏移量：', this.timeOffset);
     } catch (error) {
-      console.error('错误: 时间同步失败:', error.message);
+      console.error('同步时间时出错：', error.message);
       this.timeOffset = 0;
     }
   }
@@ -51,9 +53,12 @@ class RestAPI {
       const exchangeInfo = await this.binance.futuresExchangeInfo();
       const symbolInfo = exchangeInfo.symbols.find(s => s.symbol === symbol);
       if (!symbolInfo) throw new Error('交易对未找到');
-      return { quantityPrecision: symbolInfo.quantityPrecision || 3, pricePrecision: symbolInfo.pricePrecision || 2 };
+      return { 
+        quantityPrecision: symbolInfo.quantityPrecision || 3, 
+        pricePrecision: symbolInfo.pricePrecision || 2 
+      };
     } catch (error) {
-      console.error('错误: 获取交易对精度失败:', error.message);
+      console.error('获取交易对精度时出错：', error.message);
       return { quantityPrecision: 3, pricePrecision: 2 };
     }
   }
@@ -61,90 +66,85 @@ class RestAPI {
   async placeOrder(symbol, side, quantity) {
     try {
       if (!symbol || !side || !quantity || quantity <= 0) {
-        console.log('警告: 订单参数无效，跳过下单');
+        console.log('无效的订单参数，跳过');
         return null;
+      }
+      // 校验交易方向
+      const validSides = ['BUY', 'SELL'];
+      if (!validSides.includes(side.toUpperCase())) {
+        throw new Error('无效的交易方向');
       }
       const precision = await this.getSymbolPrecision(symbol);
       const adjustedQuantity = Number(quantity.toFixed(precision.quantityPrecision));
       const order = await this.binance.futuresOrder(side, symbol, adjustedQuantity, null, { type: 'MARKET' });
-      console.log('订单提交成功:', order);
+      console.log('订单已成功下单：', order);
       return order;
     } catch (error) {
-      console.error('错误: 订单提交失败:', error.message);
+      console.error('下单时出错：', error.message);
       throw error;
     }
   }
 
-  async placeOrderWithSLTP(symbol, side, quantity, stopLossPrice, takeProfitPrice) {
+  async placeTrailingStopOrder(symbol, side, quantity, callbackRate) {
     try {
-      if (!symbol || !side || !quantity || quantity <= 0 || !stopLossPrice || !takeProfitPrice) {
-        console.log('警告: 订单参数无效，跳过下单');
+      if (!symbol || !side || !quantity || quantity <= 0 || typeof callbackRate !== 'number') {
+        console.log('无效的跟踪止损订单参数，跳过');
         return null;
+      }
+      // 校验交易方向
+      const validSides = ['BUY', 'SELL'];
+      if (!validSides.includes(side.toUpperCase())) {
+        throw new Error('无效的交易方向');
       }
       const precision = await this.getSymbolPrecision(symbol);
       const roundedQuantity = Number(quantity.toFixed(precision.quantityPrecision));
-      const roundedStopLoss = Number(stopLossPrice.toFixed(precision.pricePrecision));
-      const roundedTakeProfit = Number(takeProfitPrice.toFixed(precision.pricePrecision));
-
-      const marketOrder = await this.binance.futuresOrder(side, symbol, roundedQuantity, null, { type: 'MARKET' });
-      logger.info('市价订单已提交:', marketOrder);
-
-      const slSide = side === 'BUY' ? 'SELL' : 'BUY';
-      const tpSide = slSide;
-
-      const slOrder = await this.binance.futuresOrder(slSide, symbol, roundedQuantity, null, {
-        type: 'STOP_MARKET',
-        stopPrice: roundedStopLoss,
+      const order = await this.binance.futuresOrder(side, symbol, roundedQuantity, null, {
+        type: 'TRAILING_STOP_MARKET',
+        callbackRate: callbackRate,
         reduceOnly: true
       });
-      logger.info('止损订单已提交:', slOrder);
-
-      const tpOrder = await this.binance.futuresOrder(tpSide, symbol, roundedQuantity, null, {
-        type: 'TAKE_PROFIT_MARKET',
-        stopPrice: roundedTakeProfit,
-        reduceOnly: true
-      });
-      logger.info('止盈订单已提交:', tpOrder);
-
-      return { marketOrder, slOrder, tpOrder };
+      logger.info(`跟踪止损订单已下单：${JSON.stringify(order)}`);
+      return order;
     } catch (error) {
-      console.error('错误: 开仓及设置止损止盈失败:', error.message);
+      console.error('下跟踪止损订单时出错：', error.message);
       throw error;
+    }
+  }
+
+  async cancelOrder(symbol, orderId) {
+    try {
+      await this.binance.futuresCancel({ symbol, orderId });
+      logger.info(`已取消订单：${orderId} 针对 ${symbol}`);
+    } catch (error) {
+      console.error(`取消订单 ${orderId} 时出错：`, error.message);
     }
   }
 
   async getAccount() {
     try {
-        const timestamp = Date.now() + (this.timeOffset || 0);
-        return await this._callWithRetry(() => this.binance.futuresAccount({ timestamp }));
+      const timestamp = Date.now() + (this.timeOffset || 0);
+      const account = await this.binance.futuresAccount({ timestamp });
+      // console.log('获取账户信息API响应:', JSON.stringify(account));
+      if (!account || !account.totalMarginBalance) throw new Error('账户信息无效');
+      return account;
     } catch (error) {
-        console.error('错误: 获取账户信息失败:', error.message);
-        return null;
+      console.error('获取账户信息时出错：', error.message);
+      return null;
     }
-}
+  }
 
   async getFundingRate(symbol) {
     try {
       if (!symbol) throw new Error('交易对无效');
       const fundingRates = await this.binance.futuresFundingRate({ symbol });
+      if (!fundingRates || fundingRates.length === 0) {
+        console.error('无资金费率数据');
+        return 0;
+      }
       const rate = parseFloat(fundingRates[fundingRates.length - 1].fundingRate) || 0;
-      console.log('获取资金费率成功:', rate);
-      return rate;
+      return rate
     } catch (error) {
-      console.error('错误: 获取资金费率失败:', error.message);
-      return 0;
-    }
-  }
-
-  async getOpenInterest(symbol) {
-    try {
-      if (!symbol) throw new Error('交易对无效');
-      const openInterest = await this.binance.futuresOpenInterest({ symbol });
-      const value = parseFloat(openInterest.openInterest) || 0;
-      console.log('获取持仓量成功:', value);
-      return value;
-    } catch (error) {
-      console.error('错误: 获取持仓量失败:', error.message);
+      console.error('获取资金费率时出错：', error.message);
       return 0;
     }
   }
@@ -154,33 +154,13 @@ class RestAPI {
       if (!symbol) throw new Error('交易对无效');
       const timestamp = Date.now() + (this.timeOffset || 0);
       const openOrders = await this.binance.futuresOpenOrders({ symbol, timestamp });
-      console.log('获取未完成订单成功，数量:', openOrders.length);
+      console.log('已获取挂单，数量：', openOrders.length);
       return openOrders || [];
     } catch (error) {
-      console.error('错误: 获取未完成订单失败:', error.message);
+      console.error('获取挂单时出错：', error.message);
       return [];
     }
   }
-
-  async _callWithRetry(func) {
-    let retries = 0;
-    const maxRetries = 3;
-    while (retries < maxRetries) {
-        try {
-            return await func();
-        } catch (error) {
-            if (error.code === -1128 || (error.response && error.response.status === 429)) {
-                const delay = Math.pow(2, retries) * 1000;
-                console.log(`Rate limit exceeded. Retrying in ${delay / 1000} seconds...`);
-                await new Promise(resolve => setTimeout(resolve, delay));
-                retries++;
-            } else {
-                throw error;
-            }
-        }
-    }
-    throw new Error('Max retries exceeded');
-}
 }
 
 module.exports = new RestAPI();

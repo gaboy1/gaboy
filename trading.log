@@ -366,3 +366,32 @@
 {"level":"warn","message":"历史数据不足，跳过本次循环","timestamp":"2025-04-07T14:51:00.005Z"}
 {"level":"warn","message":"历史数据不足，跳过本次循环","timestamp":"2025-04-07T15:05:00.012Z"}
 {"level":"info","message":"条件未满足，保持现状","timestamp":"2025-04-07T15:06:01.821Z"}
+{"level":"warn","message":"历史数据不足，跳过本次循环","timestamp":"2025-04-08T18:56:00.009Z"}
+{"level":"warn","message":"历史数据不足，跳过本次循环","timestamp":"2025-04-08T19:02:00.035Z"}
+{"level":"info","message":"条件未满足，保持现状","timestamp":"2025-04-08T19:03:00.388Z"}
+{"level":"warn","message":"历史数据不足，跳过本次循环","timestamp":"2025-04-08T19:15:00.019Z"}
+{"level":"warn","message":"历史数据不足，跳过本次循环","timestamp":"2025-04-08T19:16:00.033Z"}
+{"level":"error","message":"交易循环发生错误 Cannot read properties of null (reading 'positions')","stack":"TypeError: Cannot read properties of null (reading 'positions')\n    at Job.job (C:\\dome\\binance-trading\\main.js:136:36)\n    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)","timestamp":"2025-04-08T19:17:01.076Z"}
+{"level":"info","message":"条件未满足，保持现状","timestamp":"2025-04-08T19:18:00.326Z"}
+{"level":"info","message":"条件未满足，保持现状","timestamp":"2025-04-08T19:19:00.996Z"}
+{"level":"info","message":"条件未满足，保持现状","timestamp":"2025-04-08T19:20:00.873Z"}
+{"level":"info","message":"条件未满足，保持现状","timestamp":"2025-04-08T19:21:01.196Z"}
+{"level":"info","message":"条件未满足，保持现状","timestamp":"2025-04-08T19:22:00.347Z"}
+{"level":"info","message":"条件未满足，保持现状","timestamp":"2025-04-08T19:23:00.882Z"}
+{"level":"info","message":"条件未满足，保持现状","timestamp":"2025-04-08T19:24:00.392Z"}
+{"level":"warn","message":"历史数据不足，跳过本次循环","timestamp":"2025-04-08T19:27:00.008Z"}
+{"level":"info","message":"条件未满足，保持现状","timestamp":"2025-04-08T19:28:00.926Z"}
+{"level":"warn","message":"历史数据不足，跳过本次循环","timestamp":"2025-04-08T19:30:00.023Z"}
+{"level":"info","message":"条件未满足，保持现状","timestamp":"2025-04-08T19:31:01.086Z"}
+{"level":"info","message":"条件未满足，保持现状","timestamp":"2025-04-08T19:32:01.355Z"}
+{"level":"info","message":"条件未满足，保持现状","timestamp":"2025-04-08T19:33:00.979Z"}
+{"level":"info","message":"条件未满足，保持现状","timestamp":"2025-04-08T19:34:00.974Z"}
+{"level":"info","message":"条件未满足，保持现状","timestamp":"2025-04-08T19:35:01.067Z"}
+{"level":"info","message":"条件未满足，保持现状","timestamp":"2025-04-08T19:36:01.068Z"}
+{"level":"info","message":"条件未满足，保持现状","timestamp":"2025-04-08T19:37:01.068Z"}
+{"level":"info","message":"条件未满足，保持现状","timestamp":"2025-04-08T19:38:01.373Z"}
+{"level":"info","message":"条件未满足，保持现状","timestamp":"2025-04-08T19:39:01.020Z"}
+{"level":"warn","message":"历史数据不足，跳过本次循环","timestamp":"2025-04-08T19:42:00.035Z"}
+{"level":"error","message":"交易循环发生错误 Cannot read properties of null (reading 'positions')","stack":"TypeError: Cannot read properties of null (reading 'positions')\n    at Job.job (C:\\dome\\binance-trading\\main.js:136:36)\n    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)","timestamp":"2025-04-08T19:43:00.938Z"}
+{"level":"error","message":"交易循环发生错误 Cannot read properties of null (reading 'positions')","stack":"TypeError: Cannot read properties of null (reading 'positions')\n    at Job.job (C:\\dome\\binance-trading\\main.js:136:36)\n    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)","timestamp":"2025-04-08T19:44:00.980Z"}
+{"level":"warn","message":"历史数据不足，跳过本次循环","timestamp":"2025-04-08T19:46:00.021Z"}
