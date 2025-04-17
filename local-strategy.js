@@ -1,212 +1,129 @@
 const tulind = require('tulind');
 const config = require('./config.json');
+const SidewaysStrategy = require('./sideways-strategy');
+const TrendingStrategy = require('./trending-strategy');
+const BreakoutStrategy = require('./breakout-strategy');
+const FalseBreakoutStrategy = require('./false-breakout-strategy');
+const AccelerationStrategy = require('./acceleration-strategy');
+const NewsDrivenStrategy = require('./news-driven-strategy');
 
 class LocalStrategy {
-  async analyze({ klineData, account, sentiment = 'neutral', fundingRate = 0, orderBook = { bids: [], asks: [] }, trades = [], macroData = {} }) {
+  async analyze({ secondKlines, account, fundingRate = 0, orderBook = { bids: [], asks: [] } }) {
     try {
-      if (!Array.isArray(klineData) || klineData.length < 50) {
-        console.log('数据不足:', klineData?.length || 0);
-        return { action: 'hold', size: 0, atr: 0, multiplier: 0 };
+      // 检查账户数据
+      if (!account || !account.totalMarginBalance || isNaN(parseFloat(account.totalMarginBalance))) {
+        console.error('错误: 账户信息无效或余额数据缺失，无法执行策略');
+        throw new Error('Invalid account data');
       }
-      if (!account || !account.totalMarginBalance) {
-        console.log('警告: 账户信息无效，使用默认余额');
-        account = { totalMarginBalance: '10000' };
-      }
-
-      const totalBalance = parseFloat(account.totalMarginBalance) || 10000;
-      const availableBalance = parseFloat(account.availableBalance) || totalBalance;
-
-      const closes = klineData.map(k => parseFloat(k.c) || 0);
-      const highs = klineData.map(k => parseFloat(k.h) || 0);
-      const lows = klineData.map(k => parseFloat(k.l) || 0);
-      const volumes = klineData.map(k => parseFloat(k.v) || 0);
-      const currentPrice = closes[closes.length - 1] || 0;
-      const previousPrice = closes[closes.length - 2] || 0;
-      const currentVolume = volumes[volumes.length - 1] || 0;
-
-      // ATR计算
-      let atr = 0;
-      try {
-        const atrResult = await tulind.indicators.atr.indicator([highs, lows, closes], [14]);
-        atr = atrResult[0][atrResult[0].length - 1] || 0;
-      } catch (error) {
-        console.error('错误: ATR计算失败，使用默认值:', error.message);
-        atr = currentPrice * 0.01; // 默认1%波动
-      }
-      const atrRatio = atr / (currentPrice || 1);
-
-      // ADX计算
-      let adx = 24;
-      try {
-        const adxResult = await tulind.indicators.adx.indicator([highs, lows, closes], [14]);
-        adx = adxResult[0][adxResult[0].length - 1] || 24;
-      } catch (error) {
-        console.log('ADX计算失败，使用默认值24:', error.message);
+      if (!account.availableBalance || isNaN(parseFloat(account.availableBalance))) {
+        console.error('错误: 可用余额数据无效，无法执行策略');
+        throw new Error('Invalid available balance');
       }
 
-      // MACD计算
-      let macdLine = 0, signalLine = 0;
-      try {
-        const macdResult = await tulind.indicators.macd.indicator([closes], [12, 26, 9]);
-        macdLine = macdResult[0][macdResult[0].length - 1] || 0;
-        signalLine = macdResult[1][macdResult[1].length - 1] || 0;
-      } catch (error) {
-        console.error('错误: MACD计算失败，使用默认值:', error.message);
+      const totalBalance = parseFloat(account.totalMarginBalance);
+      const availableBalance = parseFloat(account.availableBalance);
+
+      if (totalBalance <= 0 || availableBalance <= 0) {
+        console.error('错误: 账户余额不足，无法交易', { totalBalance, availableBalance });
+        return { action: 'hold', size: 0 };
       }
 
-      // RSI计算
-      let rsi = 50;
-      try {
-        const rsiResult = await tulind.indicators.rsi.indicator([closes], [config.rsiPeriod]);
-        rsi = rsiResult[0][rsiResult[0].length - 1] || 50;
-      } catch (error) {
-        console.error('错误: RSI计算失败，使用默认值50:', error.message);
+      if (!Array.isArray(secondKlines) || secondKlines.length < 50) {
+        console.log('秒级K线数据不足:', secondKlines?.length || 0);
+        return { action: 'hold', size: 0 };
       }
 
-      // OBV计算
-      const util = require('util');
-      const promiseObv = util.promisify(tulind.indicators.obv.indicator);
-      const obvResult = await promiseObv([closes, volumes], []);
-      obv = obvResult[0] || [];
+      const closes = secondKlines.map(k => k.c);
+      const highs = secondKlines.map(k => k.h);
+      const lows = secondKlines.map(k => k.l);
+      const volumes = secondKlines.map(k => k.v);
+      const currentPrice = closes[closes.length - 1];
 
-      
-      // 动态参数
-      let breakoutPeriod = 10, bbPeriod = 15;
-      try {
-        if (atrRatio > 0.05) {
-          breakoutPeriod = 5;
-          bbPeriod = 10;
-        } else if (atrRatio > 0.01) {
-          breakoutPeriod = 10;
-          bbPeriod = 15;
-        } else {
-          breakoutPeriod = 20;
-          bbPeriod = 20;
-        }
-      } catch (error) {
-        console.error('错误: 动态参数设置失败，使用默认值:', error.message);
-      }
+      // 检测市场状态
+      let marketCondition = await this.detectMarketCondition(highs, lows, closes, volumes);
+      console.log('当前市场状态:', marketCondition);
 
-      // 市场微观结构
-      const bidPrice = orderBook.bids.length ? parseFloat(orderBook.bids[0][0]) || currentPrice : currentPrice;
-      const askPrice = orderBook.asks.length ? parseFloat(orderBook.asks[0][0]) || currentPrice : currentPrice;
-      const spread = askPrice - bidPrice;
-      const spreadPercentage = (spread / (currentPrice || 1)) * 100;
-      if (spreadPercentage > 0.01) {
-        console.log('买卖价差过大:', spreadPercentage, '%，跳过交易');
-        return { action: 'hold', size: 0, atr: 0, multiplier: 0 };
-      }
-
-      const largeTrades = trades.filter(t => (parseFloat(t.q) || 0) > 10);
-      const netLargeVolume = largeTrades.reduce((sum, t) => sum + (t.m ? -(parseFloat(t.q) || 0) : (parseFloat(t.q) || 0)), 0);
-
-      // 成交量分布
-      let volumeProfile;
-      try {
-        volumeProfile = this.calculateVolumeProfile(trades);
-      } catch (error) {
-        console.error('错误: 成交量分布计算失败:', error.message);
-        volumeProfile = [];
-      }
-      const support = volumeProfile.length ? Math.min(...volumeProfile) : currentPrice - atr;
-      const resistance = volumeProfile.length ? Math.max(...volumeProfile) : currentPrice + atr;
-
-      // 宏观因素
-      const dxy = parseFloat(macroData.dxy) || 100;
-      const dxyThreshold = 105;
-      if (dxy > dxyThreshold) {
-        console.log('美元指数过高:', dxy, '，倾向看空');
-      }
-
-      // 策略逻辑
+      // 根据市场状态选择策略
       let action = 'hold';
-      try {
-        if (adx > 25) {
-          const recentData = klineData.slice(-breakoutPeriod);
-          const highestHigh = Math.max(...recentData.map(k => parseFloat(k.h) || 0));
-          const lowestLow = Math.min(...recentData.map(k => parseFloat(k.l) || 0));
-          const avgVolume = recentData.reduce((sum, k) => sum + (parseFloat(k.v) || 0), 0) / breakoutPeriod;
-          const smaResult = await tulind.indicators.sma.indicator([closes], [50]);
-          const sma = smaResult[0][smaResult[0].length - 1] || currentPrice;
+      let positionSize = 0;
 
-          if (currentPrice > highestHigh && currentVolume > 1.5 * avgVolume && currentPrice > sma && macdLine > signalLine) {
-            action = 'long';
-          } else if (currentPrice < lowestLow && currentVolume > 1.5 * avgVolume && currentPrice < sma && macdLine < signalLine) {
-            action = 'short';
-          }
-        } else {
-          const bbResult = await tulind.indicators.bbands.indicator([closes], [bbPeriod, 2]);
-          const upper = bbResult[0][bbResult[0].length - 1] || currentPrice + atr;
-          const lower = bbResult[2][bbResult[0].length - 1] || currentPrice - atr;
-          if (currentPrice < lower && rsi < 30) {
-            action = 'long';
-          } else if (currentPrice > upper && rsi > 70) {
-            action = 'short';
-          }
-        }
-      } catch (error) {
-        console.error('错误: 策略逻辑执行失败，使用默认保持:', error.message);
-        action = 'hold';
+      switch (marketCondition) {
+        case 'sideways':
+          ({ action, size: positionSize } = await SidewaysStrategy.analyze(secondKlines, account, currentPrice));
+          break;
+        case 'trending':
+          ({ action, size: positionSize } = await TrendingStrategy.analyze(secondKlines, account, currentPrice));
+          break;
+        case 'breakout':
+          ({ action, size: positionSize } = await BreakoutStrategy.analyze(secondKlines, account, currentPrice));
+          break;
+        case 'false_breakout':
+          ({ action, size: positionSize } = await FalseBreakoutStrategy.analyze(secondKlines, account, currentPrice));
+          break;
+        case 'acceleration':
+          ({ action, size: positionSize } = await AccelerationStrategy.analyze(secondKlines, account, currentPrice));
+          break;
+        case 'news_driven':
+          ({ action, size: positionSize } = await NewsDrivenStrategy.analyze(secondKlines, account, currentPrice));
+          break;
+        default:
+          console.log('未知市场状态，保持现状');
+          return { action: 'hold', size: 0 };
       }
 
-      // OBV过滤
-      if (action === 'long' && !(obv.length >= 2 && obv[obv.length - 1] > obv[obv.length - 2])) {
-        console.log('OBV未上升，跳过开多');
-        action = 'hold';
-      } else if (action === 'short' && !(obv.length >= 2 && obv[obv.length - 1] < obv[obv.length - 2])) {
-        console.log('OBV未下降，跳过开空');
-        action = 'hold';
-      }
-
-      // 其他过滤条件
-      if (action === 'long') {
-        if (sentiment !== 'bullish' || fundingRate > 0.01 || netLargeVolume < 0 || dxy > dxyThreshold) {
-          console.log('开多条件未满足:', { sentiment, fundingRate, netLargeVolume, dxy });
-          action = 'hold';
-        }
-      } else if (action === 'short') {
-        if (sentiment !== 'bearish' || fundingRate < -0.01 || netLargeVolume > 0 || dxy < 95) {
-          console.log('开空条件未满足:', { sentiment, fundingRate, netLargeVolume, dxy });
-          action = 'hold';
-        }
-      }
-
-      if (action !== 'hold') {
-        const riskBasedSize = (totalBalance * config.riskPerTrade) / (atr || 1);
-        const leverage = config.leverage;
-        const maxInitialMargin = 0.2 * availableBalance;
-        const maxNotional = maxInitialMargin * leverage;
-        const maxQ = maxNotional / (currentPrice || 1);
-        const positionSize = Math.min(riskBasedSize, maxQ);
-        const multiplier = adx > 25 ? 3 : 1.5; // 根据ADX调整跟踪止损乘数
-        return { action, size: positionSize, atr, multiplier };
-      }
-      return { action: 'hold', size: 0, atr: 0, multiplier: 0 };
+      return { action, size: positionSize };
     } catch (error) {
       console.error('错误: 策略分析发生异常:', error.message);
-      return { action: 'hold', size: 0, atr: 0, multiplier: 0 };
+      return { action: 'hold', size: 0 };
     }
   }
 
-  calculateVolumeProfile(trades) {
+  async detectMarketCondition(highs, lows, closes, volumes, previousCondition = null, persistenceCount = 0) {
+    let adx = 0, bbWidth = 0, rsi = 0;
     try {
-      if (!Array.isArray(trades)) {
-        console.log('警告: 交易数据无效，返回空成交量分布');
-        return [];
-      }
-      const binSize = 50;
-      const volumeProfile = {};
-      trades.forEach(trade => {
-        const price = parseFloat(trade.p) || 0;
-        const bin = Math.floor(price / binSize) * binSize;
-        volumeProfile[bin] = (volumeProfile[bin] || 0) + (parseFloat(trade.q) || 0);
-      });
-      const sortedBins = Object.entries(volumeProfile).sort((a, b) => b[1] - a[1]);
-      return sortedBins.slice(0, 5).map(entry => parseFloat(entry[0]));
+      const adxResult = await tulind.indicators.adx.indicator([highs, lows, closes], [14]);
+      adx = adxResult[0][adxResult[0].length - 1] || 0;
+      const bbResult = await tulind.indicators.bbands.indicator([closes], [20, 2]);
+      const upper = bbResult[0][bbResult[0].length - 1];
+      const lower = bbResult[2][bbResult[0].length - 1];
+      const middle = bbResult[1][bbResult[0].length - 1];
+      bbWidth = (upper - lower) / middle;
+      const rsiResult = await tulind.indicators.rsi.indicator([closes], [14]);
+      rsi = rsiResult[0][rsiResult[0].length - 1] || 0;
     } catch (error) {
-      console.error('错误: 计算成交量分布失败:', error.message);
-      return [];
+      console.error('错误: 指标计算失败:', error.message);
+      return previousCondition || 'unknown';
     }
+  
+    const recentVolumes = volumes.slice(-5);
+    const avgVolume = recentVolumes.reduce((sum, v) => sum + v, 0) / recentVolumes.length;
+    const latestVolume = volumes[volumes.length - 1];
+    const volumeSpike = latestVolume > avgVolume * 2;
+  
+    let newCondition;
+    if (adx < 25 && bbWidth < 0.1) {
+      newCondition = 'sideways';
+    } else if (adx > 25 && rsi > 70) {
+      newCondition = 'trending';
+    } else if (volumeSpike && bbWidth > 0.15) {
+      newCondition = 'breakout';
+    } else if (adx < 25 && rsi > 70 && !volumeSpike) {
+      newCondition = 'false_breakout';
+    } else if (adx > 40 && rsi > 80) {
+      newCondition = 'acceleration';
+    } 
+    else {
+      newCondition = 'unknown';//  newCondition = 'news_driven';
+    }
+  
+    // 持久性检查
+    if (previousCondition && newCondition !== previousCondition) {
+      if (persistenceCount < 5) {
+        return previousCondition; // 持续5周期后才切换
+      }
+    }
+  
+    return newCondition;
   }
 }
 

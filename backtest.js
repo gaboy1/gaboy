@@ -1,45 +1,29 @@
 const fs = require('fs');
-const csv = require('csv-parse/sync');
+const tulind = require('tulind');
 const LocalStrategy = require('./local-strategy');
-const RiskManagement = require('./risk-management');
+const PositionManagement = require('./position-management');
 
 class Backtest {
   constructor() {
-    this.initialBalance = 10000;
-    this.leverage = 20;
-    this.riskPerTrade = 0.01;
-    this.strategy = LocalStrategy;
-    this.riskManager = RiskManagement;
     this.minDataPoints = 50;
+    this.trades = [];
   }
 
-  async backtest(filePath) {
+  async backtest(records = [], initBalance = 10000, leverage = 20, riskPerTrade = 0.02) {
     try {
-      if (!fs.existsSync(filePath)) {
-        console.log('历史数据文件不存在，跳过回测');
-        return null;
-      }
-
-      const fileContent = fs.readFileSync(filePath, 'utf-8');
-      let records;
-      try {
-        records = csv.parse(fileContent, { columns: true, skip_empty_lines: true });
-      } catch (error) {
-        console.error('Error parsing CSV file:', error.message);
-        return null;
-      }
-
       if (!Array.isArray(records) || records.length < this.minDataPoints) {
-        console.log(`历史数据不足${this.minDataPoints}条，当前${records.length || 0}条，跳过回测`);
-        return null;
+        console.log('错误: 回测数据不足或无效');
+        return { trades: [], balance: initBalance, maxDrawdown: 0, totalProfit: 0 };
       }
 
-      let balance = this.initialBalance;
-      let positions = [];
-      let trades = [];
+      let balance = initBalance;
+      let maxBalance = initBalance;
       let maxDrawdown = 0;
-      let peakBalance = balance;
+      let totalProfit = 0;
+      let positions = [];
+      this.trades = [];
 
+      // 转换记录为标准格式
       const historicalData = records.map(r => ({
         c: parseFloat(r.close) || 0,
         h: parseFloat(r.high) || 0,
@@ -49,141 +33,199 @@ class Backtest {
         t: r.timestamp || Date.now()
       }));
 
+      let marketCondition = 'unknown';
+      let strategyName = 'unknown';
+      let conditionPersistence = {};
+
       for (let i = this.minDataPoints - 1; i < historicalData.length; i++) {
         const klineData = historicalData.slice(i - this.minDataPoints + 1, i + 1);
         const currentKline = historicalData[i];
 
-        // Update positions with trailing stop
-        for (let j = positions.length - 1; j >= 0; j--) {
-          const pos = positions[j];
-          if (pos.isLong) {
-            pos.highestPriceSinceEntry = Math.max(pos.highestPriceSinceEntry, currentKline.h);
-            const stopLevel = pos.highestPriceSinceEntry - (pos.atr * pos.multiplier);
-            if (currentKline.l <= stopLevel) {
-              const exitPrice = Math.max(stopLevel, currentKline.o); // assume worst case
-              const profit = (exitPrice - pos.entryPrice) * pos.size;
-              balance += profit;
-              trades.push({
-                entryTime: pos.entryTime,
-                exitTime: currentKline.t,
-                entryPrice: pos.entryPrice,
-                exitPrice: exitPrice,
-                size: pos.size,
-                profit: profit,
-                isLong: pos.isLong
-              });
-              console.log(`Closed long position at ${exitPrice}, profit: ${profit}`);
-              positions.splice(j, 1);
-            }
-          } else {
-            pos.lowestPriceSinceEntry = Math.min(pos.lowestPriceSinceEntry, currentKline.l);
-            const stopLevel = pos.lowestPriceSinceEntry + (pos.atr * pos.multiplier);
-            if (currentKline.h >= stopLevel) {
-              const exitPrice = Math.min(stopLevel, currentKline.o); // assume worst case
-              const profit = (pos.entryPrice - exitPrice) * pos.size;
-              balance += profit;
-              trades.push({
-                entryTime: pos.entryTime,
-                exitTime: currentKline.t,
-                entryPrice: pos.entryPrice,
-                exitPrice: exitPrice,
-                size: pos.size,
-                profit: profit,
-                isLong: pos.isLong
-              });
-              console.log(`Closed short position at ${exitPrice}, profit: ${profit}`);
-              positions.splice(j, 1);
-            }
-          }
+        // 检测市场条件
+        marketCondition = await LocalStrategy.detectMarketCondition(
+          klineData.map(k => k.h),
+          klineData.map(k => k.l),
+          klineData.map(k => k.c),
+          klineData.map(k => k.v),
+          marketCondition,
+          conditionPersistence[marketCondition] || 0
+        );
+
+        // 更新持久性计数
+        if (conditionPersistence[marketCondition]) {
+          conditionPersistence[marketCondition]++;
+        } else {
+          conditionPersistence = { [marketCondition]: 1 };
         }
 
-        peakBalance = Math.max(peakBalance, balance);
-        const drawdown = peakBalance - balance;
-        maxDrawdown = Math.max(maxDrawdown, drawdown);
+        // 跳过新闻驱动行情
+        if (marketCondition === 'news_driven') {
+          console.log('跳过新闻驱动行情:', currentKline.t);
+          continue;
+        }
 
+        // 确定策略名称
+        strategyName = this.getStrategyName(marketCondition);
+
+        // 模拟账户数据
+        const account = {
+          totalMarginBalance: balance,
+          availableBalance: balance,
+          positions: positions.map(pos => ({
+            symbol: config.symbols[0],
+            positionAmt: pos.isLong ? pos.size : -pos.size
+          }))
+        };
+
+        // 调用策略分析
         let decision;
         try {
-          decision = await this.strategy.analyze({
-            klineData,
-            account: { totalMarginBalance: balance },
-            sentiment: 'neutral',
-            fundingRate: 0,
-            orderBook: { bids: [], asks: [] },
-            trades: [],
-            macroData: { dxy: 100 }
+          decision = await LocalStrategy.analyze({
+            secondKlines: klineData,
+            account,
+            fundingRate: 0, // 测试网无资金费率，设为0
+            orderBook: { bids: [], asks: [] }
           });
         } catch (error) {
-          console.error('Error in strategy analysis:', error.message);
-          decision = { action: 'hold', size: 0, atr: 0, multiplier: 0 };
+          console.error('错误: 策略分析失败:', error.message);
+          decision = { action: 'hold', size: 0 };
         }
 
-        if (decision.action === 'long' && positions.length === 0) {
-          const entryPrice = currentKline.c;
-          const position = {
-            isLong: true,
-            entryPrice: entryPrice,
-            highestPriceSinceEntry: entryPrice,
-            size: decision.size,
-            atr: decision.atr,
-            multiplier: decision.multiplier,
-            entryTime: currentKline.t
-          };
-          positions.push(position);
-          console.log(`Opened long position at ${entryPrice}, size: ${decision.size}`);
-        } else if (decision.action === 'short' && positions.length === 0) {
-          const entryPrice = currentKline.c;
-          const position = {
-            isLong: false,
-            entryPrice: entryPrice,
-            lowestPriceSinceEntry: entryPrice,
-            size: decision.size,
-            atr: decision.atr,
-            multiplier: decision.multiplier,
-            entryTime: currentKline.t
-          };
-          positions.push(position);
-          console.log(`Opened short position at ${entryPrice}, size: ${decision.size}`);
+        const { action, size } = decision;
+        const currentPrice = currentKline.c;
+
+        // 处理交易信号
+        if (action === 'long' || action === 'short') {
+          const isLong = action === 'long';
+          const existingPos = positions.find(pos => pos.isLong === isLong);
+
+          if (!existingPos) {
+            positions.push({
+              entryPrice: currentPrice,
+              size,
+              isLong,
+              entryTime: currentKline.t
+            });
+            console.log(`开仓: ${action}, 价格: ${currentPrice}, 仓位: ${size}, 时间: ${currentKline.t}`);
+          }
+        } else if (action === 'close_long' || action === 'close_short') {
+          const isLong = action === 'close_long';
+          const posIndex = positions.findIndex(pos => pos.isLong === isLong);
+          if (posIndex !== -1) {
+            const pos = positions[posIndex];
+            const exitPrice = currentPrice;
+            const profit = pos.isLong
+              ? (exitPrice - pos.entryPrice) * pos.size
+              : (pos.entryPrice - exitPrice) * pos.size;
+
+            balance += profit;
+            totalProfit += profit;
+            maxBalance = Math.max(maxBalance, balance);
+            const drawdown = (maxBalance - balance) / maxBalance;
+            maxDrawdown = Math.max(maxDrawdown, drawdown);
+
+            this.trades.push({
+              entryTime: pos.entryTime,
+              exitTime: currentKline.t,
+              entryPrice: pos.entryPrice,
+              exitPrice: exitPrice,
+              size: pos.size,
+              profit: profit,
+              isLong: pos.isLong,
+              marketCondition: marketCondition,
+              strategyUsed: strategyName
+            });
+
+            console.log(`平仓: ${action}, 价格: ${exitPrice}, 盈亏: ${profit}, 时间: ${currentKline.t}`);
+            positions.splice(posIndex, 1);
+          }
         }
       }
 
-      // Close any remaining positions at the last price
+      // 关闭剩余仓位
       for (const pos of positions) {
-        const lastPrice = historicalData[historicalData.length - 1].c;
-        const profit = pos.isLong ? (lastPrice - pos.entryPrice) * pos.size : (pos.entryPrice - lastPrice) * pos.size;
+        const exitPrice = historicalData[historicalData.length - 1].c;
+        const profit = pos.isLong
+          ? (exitPrice - pos.entryPrice) * pos.size
+          : (pos.entryPrice - exitPrice) * pos.size;
+
         balance += profit;
-        trades.push({
+        totalProfit += profit;
+        maxBalance = Math.max(maxBalance, balance);
+        const drawdown = (maxBalance - balance) / maxBalance;
+        maxDrawdown = Math.max(maxDrawdown, drawdown);
+
+        this.trades.push({
           entryTime: pos.entryTime,
           exitTime: historicalData[historicalData.length - 1].t,
           entryPrice: pos.entryPrice,
-          exitPrice: lastPrice,
+          exitPrice: exitPrice,
           size: pos.size,
           profit: profit,
-          isLong: pos.isLong
+          isLong: pos.isLong,
+          marketCondition: marketCondition,
+          strategyUsed: strategyName
         });
-        console.log(`Closed remaining ${pos.isLong ? 'long' : 'short'} position at ${lastPrice}, profit: ${profit}`);
       }
 
-      const finalBalance = balance;
-      const totalProfit = finalBalance - this.initialBalance;
-      const winTrades = trades.filter(t => t.profit > 0).length;
-      const totalTrades = trades.length;
-      const winRate = totalTrades > 0 ? (winTrades / totalTrades) * 100 : 0;
-      const monthlyRate = totalTrades > 0 ? ((totalProfit / this.initialBalance) / (records.length / 720)) * 100 : 0;
+      // 保存回测结果到CSV
+      this.saveToCsv();
 
-      console.log('=== 回测结果 ===');
-      console.log(`初始余额: ${this.initialBalance}`);
-      console.log(`最终余额: ${finalBalance.toFixed(2)}`);
-      console.log(`总收益: ${totalProfit.toFixed(2)} (${((totalProfit / this.initialBalance) * 100).toFixed(2)}%)`);
-      console.log(`月化收益率: ${monthlyRate.toFixed(2)}%`);
-      console.log(`交易次数: ${totalTrades}`);
-      console.log(`胜率: ${winRate.toFixed(2)}%`);
-      console.log(`最大回撤: ${maxDrawdown.toFixed(2)} (${((maxDrawdown / peakBalance) * 100).toFixed(2)}%)`);
-      console.log('===============');
-
-      return { finalBalance, totalProfit, monthlyRate, totalTrades, winRate, maxDrawdown };
+      return {
+        trades: this.trades,
+        balance,
+        maxDrawdown,
+        totalProfit
+      };
     } catch (error) {
-      console.error('Error in backtest:', error.message);
-      return null;
+      console.error('回测发生错误:', error.message);
+      return { trades: [], balance: initBalance, maxDrawdown: 0, totalProfit: 0 };
+    }
+  }
+
+  getStrategyName(marketCondition) {
+    const strategyMap = {
+      sideways: 'ARIMA',
+      trending: 'EMA_Crossover',
+      breakout: 'Breakout',
+      false_breakout: 'False_Breakout',
+      acceleration: 'Acceleration'
+    };
+    return strategyMap[marketCondition] || 'Unknown';
+  }
+
+  saveToCsv() {
+    try {
+      const headers = [
+        'entryTime',
+        'exitTime',
+        'entryPrice',
+        'exitPrice',
+        'size',
+        'profit',
+        'isLong',
+        'marketCondition',
+        'strategyUsed'
+      ];
+      const csvLines = [headers.join(',')];
+      for (const trade of this.trades) {
+        const line = [
+          trade.entryTime,
+          trade.exitTime || '',
+          trade.entryPrice,
+          trade.exitPrice || '',
+          trade.size,
+          trade.profit || 0,
+          trade.isLong,
+          trade.marketCondition,
+          trade.strategyUsed
+        ].join(',');
+        csvLines.push(line);
+      }
+      fs.writeFileSync('backtest_trades.csv', csvLines.join('\n'));
+      console.log('回测结果已保存至 backtest_trades.csv');
+    } catch (error) {
+      console.error('保存回测结果失败:', error.message);
     }
   }
 }

@@ -12,6 +12,8 @@
   "dependencies": {
     "@tensorflow/tfjs": "^4.22.0",
     "alphavantage": "^2.5.0",
+    "arima": "^0.2.5",
+    "async": "^3.2.6",
     "axios": "^1.8.4",
     "compromise": "^14.14.4",
     "csv-parse": "^5.6.0",

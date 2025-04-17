@@ -5,9 +5,7 @@ const RealTimeData = require('./real-time-data');
 const LocalStrategy = require('./local-strategy');
 const RestAPI = require('./rest-api');
 const PositionManagement = require('./position-management');
-const MarketSentiment = require('./market-sentiment');
 const config = require('./config.json');
-const axios = require('axios');
 
 const logger = winston.createLogger({
   level: 'info',
@@ -24,7 +22,7 @@ const logger = winston.createLogger({
 class MainProgram {
   constructor() {
     this.historyFile = 'trade_history.csv';
-    this.macroData = {};
+    this.isHoldingPosition = false; // 新增：是否持有仓位标志
     this.initHistoryFile();
   }
 
@@ -46,7 +44,7 @@ class MainProgram {
         return;
       }
       const existing = fs.existsSync(this.historyFile) ? fs.readFileSync(this.historyFile, 'utf-8') : '';
-      if (!existing.includes(klineData.t)) {
+      if (!existing.includes(klineData.t.toString())) {
         const line = `${klineData.t},${klineData.o},${klineData.h},${klineData.l},${klineData.c},${klineData.v}\n`;
         fs.appendFileSync(this.historyFile, line);
         console.log('成功记录K线数据到历史文件');
@@ -56,104 +54,70 @@ class MainProgram {
     }
   }
 
-  async fetchMacroData() {
-    try {
-      // 获取美元指数 (DXY)
-      const dxyResponse = await axios.get(`https://api.stlouisfed.org/fred/series/observations?series_id=DTWEXBGS&api_key=${config.fredApiKey}&file_type=json`);
-      const dxyObservations = dxyResponse.data.observations;
-      if (dxyObservations && dxyObservations.length > 0) {
-        this.macroData.dxy = parseFloat(dxyObservations[dxyObservations.length - 1].value) || 100;
-        console.log('美元指数数据更新成功:', this.macroData.dxy);
-      } else {
-        console.log('警告: 无法从FRED获取美元指数数据');
-        this.macroData.dxy = 100;
-      }
-
-      // 获取标普500 (SP500)
-      const sp500Response = await axios.get(`https://api.stlouisfed.org/fred/series/observations?series_id=SP500&api_key=${config.fredApiKey}&file_type=json`);
-      const sp500Observations = sp500Response.data.observations;
-      if (sp500Observations && sp500Observations.length > 0) {
-        const latestValue = sp500Observations[sp500Observations.length - 1].value;
-        this.macroData.sp500 = latestValue !== '.' ? parseFloat(latestValue) : null; // 处理无效值
-        console.log('标普500数据更新成功:', this.macroData.sp500);
-      } else {
-        console.log('警告: 无法从FRED获取标普500数据');
-        this.macroData.sp500 = null;
-      }
-    } catch (error) {
-      console.error('错误: 获取宏观数据失败:', error.message);
-      this.macroData.dxy = 100;
-      this.macroData.sp500 = null;
-    }
-  }
-
   async run() {
     try {
       PositionManagement.startMonitoring();
-      await this.fetchMacroData();
-      schedule.scheduleJob('0 0 * * *', () => this.fetchMacroData());
+      const symbol = config.symbols[0] || 'BTCUSDT';
+      await RealTimeData.start(symbol);
 
-      schedule.scheduleJob('*/1 * * * *', async () => {
+      schedule.scheduleJob('*/1 * * * * *', async () => {
         try {
-          const symbol = config.symbols[0] || 'BTCUSDT';
-          RealTimeData.start(symbol);
-          const klineData = RealTimeData.getHistory();
-          if (!Array.isArray(klineData) || klineData.length < 50) {
-            logger.warn('历史数据不足，跳过本次循环');
-            return;
-          }
+          await RealTimeData.fetchOrderBook();
+          const secondKlines = RealTimeData.getSecondKlines() || [];
+          const orderBook = RealTimeData.getOrderBook() || { bids: [], asks: [] };
 
           let account;
           try {
             account = await RestAPI.getAccount();
           } catch (error) {
             console.error('错误: 获取账户信息失败:', error.message);
-            console.log('账户信息获取失败，本次循环跳过');
             return;
           }
 
-          const sentiment = await MarketSentiment.analyzeNews(symbol);
           const fundingRate = await RestAPI.getFundingRate(symbol) || 0;
-          const orderBook = RealTimeData.getOrderBook() || { bids: [], asks: [] };
-          const trades = RealTimeData.getTrades() || [];
 
           let localDecision;
           try {
             localDecision = await LocalStrategy.analyze({
-              klineData,
+              secondKlines,
               account,
-              sentiment,
               fundingRate,
-              orderBook,
-              trades,
-              macroData: this.macroData
+              orderBook
             });
           } catch (error) {
             console.error('错误: 策略分析失败:', error.message);
-            localDecision = { action: 'hold', size: 0, stopLoss: 0, takeProfit: 0 };
+            localDecision = { action: 'hold', size: 0 };
           }
 
           const position = account.positions?.find(p => p.symbol === symbol) || { positionAmt: '0' };
           const positionAmt = parseFloat(position.positionAmt) || 0;
+          const isLong = positionAmt > 0;
+          const isShort = positionAmt < 0;
+          const isFlat = positionAmt === 0;
 
-          if (positionAmt !== 0) {
-            const isLong = positionAmt > 0;
-            const decisionAction = localDecision.action;
-            if ((isLong && decisionAction === 'short') || (!isLong && decisionAction === 'long')) {
+          // 如果当前持有仓位，仅处理平仓信号
+          if (this.isHoldingPosition) {
+            if ((isLong && localDecision.action === 'close_long') || (isShort && localDecision.action === 'close_short')) {
               const closeSide = isLong ? 'SELL' : 'BUY';
               const closeQuantity = Math.abs(positionAmt);
               try {
+                await RestAPI.cancelAllOrders(symbol); // 取消所有挂单
                 await RestAPI.placeOrder(symbol, closeSide, closeQuantity);
                 logger.info('已关闭现有仓位', { symbol, side: closeSide, quantity: closeQuantity });
+                this.isHoldingPosition = false; // 平仓后恢复开仓能力
               } catch (error) {
                 console.error('错误: 关闭仓位失败:', error.message);
               }
+            } else {
+              logger.info('当前持有仓位，保持现状');
             }
+            return;
           }
 
+          // 如果无持仓，处理开仓信号
           if (localDecision.action === 'long' || localDecision.action === 'short') {
-            const openOrders = await RestAPI.getOpenOrders(symbol);
-            const hasOpenEntryOrder = openOrders.some(order => order.type === 'MARKET' || order.type === 'LIMIT');
+            const openOrders = await RestAPI.getOpenOrders(symbol) || [];
+            const hasOpenEntryOrder = Array.isArray(openOrders) && openOrders.some(order => order.type === 'MARKET' || order.type === 'LIMIT');
             if (hasOpenEntryOrder) {
               console.log('已有未完成的入场订单，跳过下单');
               return;
@@ -161,9 +125,12 @@ class MainProgram {
 
             const side = localDecision.action === 'long' ? 'BUY' : 'SELL';
             try {
-              await RestAPI.placeOrderWithSLTP(symbol, side, localDecision.size, localDecision.stopLoss, localDecision.takeProfit);
-              logger.info('已开新仓并设置止损止盈', { symbol, side, size: localDecision.size, stopLoss: localDecision.stopLoss, takeProfit: localDecision.takeProfit });
-              this.appendToHistory(klineData[klineData.length - 1]);
+              await RestAPI.cancelAllOrders(symbol); // 下单前取消所有挂单
+              await RestAPI.placeOrder(symbol, side, localDecision.size);
+              logger.info('已开新仓', { symbol, side, size: localDecision.size });
+              this.isHoldingPosition = true; // 开仓后进入持仓监控模式
+              const latestKline = secondKlines[secondKlines.length - 1];
+              if (latestKline) this.appendToHistory(latestKline);
             } catch (error) {
               console.error('错误: 开仓失败:', error.message);
             }

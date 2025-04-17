@@ -69,7 +69,6 @@ class RestAPI {
         console.log('无效的订单参数，跳过');
         return null;
       }
-      // 校验交易方向
       const validSides = ['BUY', 'SELL'];
       if (!validSides.includes(side.toUpperCase())) {
         throw new Error('无效的交易方向');
@@ -91,7 +90,6 @@ class RestAPI {
         console.log('无效的跟踪止损订单参数，跳过');
         return null;
       }
-      // 校验交易方向
       const validSides = ['BUY', 'SELL'];
       if (!validSides.includes(side.toUpperCase())) {
         throw new Error('无效的交易方向');
@@ -111,6 +109,42 @@ class RestAPI {
     }
   }
 
+  async placeOrderWithSLTP(symbol, side, quantity, stopLoss, takeProfit) {
+    try {
+      const precision = await this.getSymbolPrecision(symbol);
+      const adjustedQuantity = Number(quantity.toFixed(precision.quantityPrecision));
+      // Place market order
+      const marketOrder = await this.binance.futuresOrder(side, symbol, adjustedQuantity, null, { type: 'MARKET' });
+      console.log('Market order placed:', marketOrder);
+      // Determine opposite side
+      const oppositeSide = side === 'BUY' ? 'SELL' : 'BUY';
+      // Place STOP_MARKET for SL if provided
+      if (stopLoss) {
+        const slPrice = Number(stopLoss.toFixed(precision.pricePrecision));
+        const slOrder = await this.binance.futuresOrder(oppositeSide, symbol, adjustedQuantity, null, {
+          type: 'STOP_MARKET',
+          stopPrice: slPrice,
+          reduceOnly: true
+        });
+        console.log('Stop Loss order placed:', slOrder);
+      }
+      // Place TAKE_PROFIT_MARKET for TP if provided
+      if (takeProfit) {
+        const tpPrice = Number(takeProfit.toFixed(precision.pricePrecision));
+        const tpOrder = await this.binance.futuresOrder(oppositeSide, symbol, adjustedQuantity, null, {
+          type: 'TAKE_PROFIT_MARKET',
+          stopPrice: tpPrice,
+          reduceOnly: true
+        });
+        console.log('Take Profit order placed:', tpOrder);
+      }
+      return marketOrder;
+    } catch (error) {
+      console.error('Error placing order with SL/TP:', error.message);
+      throw error;
+    }
+  }
+
   async cancelOrder(symbol, orderId) {
     try {
       await this.binance.futuresCancel({ symbol, orderId });
@@ -124,7 +158,6 @@ class RestAPI {
     try {
       const timestamp = Date.now() + (this.timeOffset || 0);
       const account = await this.binance.futuresAccount({ timestamp });
-      // console.log('获取账户信息API响应:', JSON.stringify(account));
       if (!account || !account.totalMarginBalance) throw new Error('账户信息无效');
       return account;
     } catch (error) {
@@ -137,28 +170,52 @@ class RestAPI {
     try {
       if (!symbol) throw new Error('交易对无效');
       const fundingRates = await this.binance.futuresFundingRate({ symbol });
-      if (!fundingRates || fundingRates.length === 0) {
+      if (!Array.isArray(fundingRates) || fundingRates.length === 0) {
         console.error('无资金费率数据');
         return 0;
       }
       const rate = parseFloat(fundingRates[fundingRates.length - 1].fundingRate) || 0;
-      return rate
+      return rate;
     } catch (error) {
       console.error('获取资金费率时出错：', error.message);
       return 0;
     }
   }
+  
 
   async getOpenOrders(symbol) {
     try {
-      if (!symbol) throw new Error('交易对无效');
       const timestamp = Date.now() + (this.timeOffset || 0);
-      const openOrders = await this.binance.futuresOpenOrders({ symbol, timestamp });
-      console.log('已获取挂单，数量：', openOrders.length);
-      return openOrders || [];
+      const response = await this.binance.futuresOpenOrders({ symbol, timestamp });
+      if (!Array.isArray(response)) {
+        console.error('Binance API returned non-array response:', response);
+        return [];
+      }
+      console.log('已获取挂单，数量：', response.length);
+      return response;
     } catch (error) {
       console.error('获取挂单时出错：', error.message);
       return [];
+    }
+  }
+
+  async cancelAllOrders(symbol) {
+    try {
+      await this.binance.futuresCancelAll({ symbol });
+      console.log(`已取消${symbol}的所有挂单`);
+    } catch (error) {
+      console.error(`取消${symbol}的所有挂单时出错：`, error.message);
+    }
+  }
+
+  async getOrderStatus(symbol, orderId) {
+    try {
+      const timestamp = Date.now() + (this.timeOffset || 0);
+      const status = await this.binance.futuresOrderStatus({ symbol, orderId, timestamp });
+      return status;
+    } catch (error) {
+      console.error(`获取订单${orderId}状态失败：`, error.message);
+      return null;
     }
   }
 }
